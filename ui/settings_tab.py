@@ -77,6 +77,7 @@ class SettingsTab(QWidget):
         select_row.addWidget(QLabel("Workbook:"))
         self.workbook_combo = QComboBox()
         self.workbook_combo.setMinimumWidth(200)
+        self.workbook_combo.currentTextChanged.connect(self._on_workbook_changed)
         select_row.addWidget(self.workbook_combo)
         
         self.refresh_btn = QPushButton("↻ Refresh")
@@ -87,6 +88,19 @@ class SettingsTab(QWidget):
         select_row.addStretch()
         
         excel_layout.addLayout(select_row)
+        
+        # Sheet selection
+        sheet_row = QHBoxLayout()
+        
+        sheet_row.addWidget(QLabel("Sheet:"))
+        self.sheet_combo = QComboBox()
+        self.sheet_combo.setMinimumWidth(200)
+        self.sheet_combo.currentTextChanged.connect(self._on_sheet_changed)
+        sheet_row.addWidget(self.sheet_combo)
+        
+        sheet_row.addStretch()
+        
+        excel_layout.addLayout(sheet_row)
         
         # Connect/Disconnect buttons
         btn_row = QHBoxLayout()
@@ -195,13 +209,57 @@ class SettingsTab(QWidget):
         
         workbooks = handler.get_open_workbooks()
         
+        self.workbook_combo.blockSignals(True)
         self.workbook_combo.clear()
         if workbooks:
             self.workbook_combo.addItems(workbooks)
+            # Select active workbook
+            wb_info = handler.get_active_workbook_info()
+            if wb_info and wb_info['name'] in workbooks:
+                self.workbook_combo.setCurrentText(wb_info['name'])
         else:
             self.workbook_combo.addItem("(No workbooks open)")
+        self.workbook_combo.blockSignals(False)
+        
+        # Trigger workbook selection to populate sheets
+        if workbooks:
+            self._on_workbook_changed(self.workbook_combo.currentText())
         
         self._refresh_excel_status()
+    
+    def _on_workbook_changed(self, workbook_name: str):
+        """Handle workbook selection change."""
+        if not workbook_name or workbook_name == "(No workbooks open)":
+            self.sheet_combo.clear()
+            return
+        
+        handler = get_excel_handler()
+        
+        if handler.select_workbook(workbook_name):
+            # Populate sheets
+            sheets = handler.get_sheets()
+            
+            self.sheet_combo.blockSignals(True)
+            self.sheet_combo.clear()
+            if sheets:
+                self.sheet_combo.addItems(sheets)
+                # Select active sheet
+                active_sheet = handler.get_active_sheet_name()
+                if active_sheet and active_sheet in sheets:
+                    self.sheet_combo.setCurrentText(active_sheet)
+            self.sheet_combo.blockSignals(False)
+            
+            self._refresh_excel_status()
+    
+    def _on_sheet_changed(self, sheet_name: str):
+        """Handle sheet selection change."""
+        if not sheet_name:
+            return
+        
+        handler = get_excel_handler()
+        
+        if handler.select_sheet(sheet_name):
+            self._refresh_excel_status()
     
     def _connect_excel(self):
         """Connect to Excel."""

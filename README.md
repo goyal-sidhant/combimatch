@@ -5,20 +5,26 @@ A Windows desktop application for finding combinations of numbers that sum to a 
 ## Features
 
 - **Subset Sum Solver**: Find combinations of numbers matching a target sum with buffer tolerance
+- **Split Results View**: Exact matches and approximate matches displayed separately
+- **Selected Combination Info Panel**: Detailed view of selected combination before finalizing
 - **Multiple Input Modes**: 
   - Line-separated numbers
   - Comma-separated numbers  
   - Direct Excel selection (filter-aware)
 - **Excel Integration**:
   - Read selected cells from open Excel files
+  - Select specific workbook and sheet from Settings
   - Respects filtered views (only reads visible cells)
   - Auto-save before modifications
   - Highlight matched cells directly in Excel
 - **Visual Workflow**:
   - Results sorted by combination size
+  - Prominent orange highlight when selecting a combination
+  - Bold text for selected numbers in source list
   - Preview combinations before finalizing
   - Unique colors for each finalized combination
-  - Source list shows original order of numbers
+  - Finalized numbers marked with ✓ and greyed out
+  - Invalid combinations automatically removed after finalization
 - **Clean UI**: Soft colors, multi-tab layout, resizable window
 
 ## Installation
@@ -60,12 +66,15 @@ python main.py
 
 3. **Find Combinations**
    - Click "Find Combinations"
-   - Results appear sorted by size (smallest first)
+   - Exact matches appear in top box, approximate in bottom box
+   - Results sorted by size (smallest first)
 
 4. **Review & Finalize**
-   - Click a result to highlight its numbers in the source list
+   - Click a result to see details in the info panel
+   - Selected numbers highlighted in orange with bold text
    - Click "Finalize Selected" to lock in the match
-   - Finalized numbers get a unique color and are excluded from future searches
+   - Finalized numbers get a unique color and ✓ marker
+   - Combinations using finalized numbers are automatically removed
 
 5. **Repeat**
    - Continue finding combinations with remaining numbers
@@ -81,6 +90,7 @@ python main.py
 
 ### Excel Tips
 
+- Go to Settings tab to select specific workbook and sheet
 - Only visible cells are read (respects filters)
 - Multi-column selections are read as a flat list (with warning)
 - The app auto-saves your workbook before making changes
@@ -98,6 +108,7 @@ combimatch/
 ├── utils.py             # Utilities and color management
 ├── requirements.txt     # Python dependencies
 ├── README.md            # This file
+├── .gitignore           # Git ignore file
 └── ui/
     ├── __init__.py      # UI package
     ├── main_window.py   # Main application window
@@ -106,6 +117,15 @@ combimatch/
     ├── settings_tab.py  # Settings and Excel connection
     └── styles.py        # UI styling and theme
 ```
+
+## What's New in This Version
+
+- **Split Results**: Exact and approximate matches in separate boxes
+- **Info Panel**: Shows sum, difference, item count, and values before finalizing
+- **Prominent Highlighting**: Orange background + bold text for selected items
+- **Smart Cleanup**: Combinations using finalized numbers auto-removed
+- **Sheet Selection**: Choose specific sheet in Excel from Settings
+- **Visual Indicators**: ✓ marker and color for finalized numbers
 
 ## Keyboard Shortcuts
 

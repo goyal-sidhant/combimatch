@@ -4,19 +4,20 @@ find_tab.py - Find Combinations Tab for CombiMatch
 The main workspace containing:
 - Input area (manual or Excel)
 - Parameter fields
-- Results list
+- Results list (split into Exact and Approximate matches)
 - Source list with highlighting
+- Selected combination info panel
 """
 
-from typing import List, Optional
+from typing import List, Optional, Set
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QLineEdit, QTextEdit, QPushButton, QListWidget,
     QListWidgetItem, QGroupBox, QComboBox, QSplitter,
-    QMessageBox, QFrame, QSpinBox
+    QMessageBox, QFrame, QSpinBox, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QColor
+from PyQt5.QtGui import QColor, QFont, QBrush
 
 from models import NumberItem, Combination, FinalizedCombination, InputMode
 from solver import SubsetSumSolver, quick_check_possible
@@ -29,6 +30,12 @@ from utils import (
     rgb_to_hex,
     get_contrast_color
 )
+
+
+# Colors for UI
+SELECTION_HIGHLIGHT_COLOR = (255, 165, 0)  # Orange - prominent selection highlight
+FINALIZED_TEXT_COLOR = (150, 150, 150)  # Grey for finalized items
+DISABLED_COMBO_COLOR = (240, 240, 240)  # Light grey for invalid combos
 
 
 class SolverThread(QThread):
@@ -58,6 +65,90 @@ class SolverThread(QThread):
         self.solver.stop()
 
 
+class SelectedComboInfoPanel(QFrame):
+    """Panel showing details of the currently selected combination."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
+        self.setStyleSheet("""
+            SelectedComboInfoPanel {
+                background-color: #f8f9fa;
+                border: 1px solid #dee2e6;
+                border-radius: 6px;
+                padding: 8px;
+            }
+        """)
+        self._init_ui()
+    
+    def _init_ui(self):
+        """Initialize the panel UI."""
+        layout = QVBoxLayout(self)
+        layout.setSpacing(6)
+        layout.setContentsMargins(12, 12, 12, 12)
+        
+        # Title
+        title = QLabel("Selected Combination")
+        title_font = QFont()
+        title_font.setBold(True)
+        title_font.setPointSize(10)
+        title.setFont(title_font)
+        layout.addWidget(title)
+        
+        # Info grid
+        info_layout = QGridLayout()
+        info_layout.setSpacing(4)
+        
+        info_layout.addWidget(QLabel("Sum:"), 0, 0)
+        self.sum_label = QLabel("-")
+        self.sum_label.setStyleSheet("font-weight: bold;")
+        info_layout.addWidget(self.sum_label, 0, 1)
+        
+        info_layout.addWidget(QLabel("Difference:"), 1, 0)
+        self.diff_label = QLabel("-")
+        info_layout.addWidget(self.diff_label, 1, 1)
+        
+        info_layout.addWidget(QLabel("Items:"), 2, 0)
+        self.count_label = QLabel("-")
+        info_layout.addWidget(self.count_label, 2, 1)
+        
+        layout.addLayout(info_layout)
+        
+        # Values list
+        layout.addWidget(QLabel("Values:"))
+        self.values_label = QLabel("-")
+        self.values_label.setWordWrap(True)
+        self.values_label.setStyleSheet("color: #495057; padding-left: 8px;")
+        layout.addWidget(self.values_label)
+        
+        # Placeholder for empty state
+        self.placeholder = QLabel("Select a combination to see details")
+        self.placeholder.setStyleSheet("color: #868e96; font-style: italic;")
+        self.placeholder.setAlignment(Qt.AlignCenter)
+    
+    def update_info(self, combo: Optional[Combination]):
+        """Update the panel with combination info."""
+        if combo is None:
+            self.sum_label.setText("-")
+            self.diff_label.setText("-")
+            self.count_label.setText("-")
+            self.values_label.setText("-")
+        else:
+            self.sum_label.setText(f"{combo.sum:,.2f}")
+            
+            diff = combo.difference
+            diff_color = "#51cf66" if diff == 0 else "#fcc419"
+            self.diff_label.setText(f"{combo.difference_display}")
+            self.diff_label.setStyleSheet(f"color: {diff_color}; font-weight: bold;")
+            
+            self.count_label.setText(f"{combo.size} numbers")
+            
+            # Show values in original order
+            items_ordered = combo.items_in_original_order()
+            values_text = "\n".join(f"• {item.value:,.2f}" for item in items_ordered)
+            self.values_label.setText(values_text)
+
+
 class FindTab(QWidget):
     """
     Main workspace tab for finding combinations.
@@ -70,12 +161,14 @@ class FindTab(QWidget):
         super().__init__(parent)
         
         self.items: List[NumberItem] = []
-        self.combinations: List[Combination] = []
+        self.exact_combinations: List[Combination] = []
+        self.approx_combinations: List[Combination] = []
         self.finalized: List[FinalizedCombination] = []
         self.color_manager = ColorManager()
         self.selected_combo: Optional[Combination] = None
         self.solver_thread: Optional[SolverThread] = None
         self.input_mode = InputMode.LINE_SEPARATED
+        self.current_target: float = 0.0
         
         self._init_ui()
         self._connect_signals()
@@ -92,16 +185,16 @@ class FindTab(QWidget):
         left_panel = self._create_left_panel()
         splitter.addWidget(left_panel)
         
-        # Middle panel - Results
+        # Middle panel - Results (Exact + Approx)
         middle_panel = self._create_middle_panel()
         splitter.addWidget(middle_panel)
         
-        # Right panel - Source List
+        # Right panel - Source List + Info Panel
         right_panel = self._create_right_panel()
         splitter.addWidget(right_panel)
         
-        # Set initial sizes (roughly equal)
-        splitter.setSizes([300, 350, 300])
+        # Set initial sizes
+        splitter.setSizes([280, 380, 320])
         
         layout.addWidget(splitter)
     
@@ -203,51 +296,70 @@ class FindTab(QWidget):
         return panel
     
     def _create_middle_panel(self) -> QWidget:
-        """Create the results panel."""
+        """Create the results panel with Exact and Approximate sections."""
         panel = QWidget()
         layout = QVBoxLayout(panel)
+        layout.setSpacing(12)
         
-        # Header
-        header = QLabel("Combinations Found")
-        header.setProperty("heading", True)
-        layout.addWidget(header)
+        # Exact Matches Section
+        exact_group = QGroupBox("Exact Matches")
+        exact_layout = QVBoxLayout(exact_group)
         
-        # Results count
-        self.results_count_label = QLabel("No results yet")
-        self.results_count_label.setProperty("subheading", True)
-        layout.addWidget(self.results_count_label)
+        self.exact_count_label = QLabel("0 exact matches")
+        self.exact_count_label.setProperty("subheading", True)
+        exact_layout.addWidget(self.exact_count_label)
         
-        # Results list
-        self.results_list = QListWidget()
-        self.results_list.setSelectionMode(QListWidget.SingleSelection)
-        layout.addWidget(self.results_list)
+        self.exact_list = QListWidget()
+        self.exact_list.setSelectionMode(QListWidget.SingleSelection)
+        exact_layout.addWidget(self.exact_list)
+        
+        layout.addWidget(exact_group)
+        
+        # Approximate Matches Section
+        approx_group = QGroupBox("Approximate Matches")
+        approx_layout = QVBoxLayout(approx_group)
+        
+        self.approx_count_label = QLabel("0 approximate matches")
+        self.approx_count_label.setProperty("subheading", True)
+        approx_layout.addWidget(self.approx_count_label)
+        
+        self.approx_list = QListWidget()
+        self.approx_list.setSelectionMode(QListWidget.SingleSelection)
+        approx_layout.addWidget(self.approx_list)
+        
+        layout.addWidget(approx_group)
         
         # Finalize button
         self.finalize_btn = QPushButton("✓ Finalize Selected")
         self.finalize_btn.setEnabled(False)
+        self.finalize_btn.setMinimumHeight(36)
         layout.addWidget(self.finalize_btn)
         
         return panel
     
     def _create_right_panel(self) -> QWidget:
-        """Create the source list panel."""
+        """Create the source list and info panel."""
         panel = QWidget()
         layout = QVBoxLayout(panel)
+        layout.setSpacing(12)
         
-        # Header
-        header = QLabel("Source Numbers")
-        header.setProperty("heading", True)
-        layout.addWidget(header)
+        # Selected Combo Info Panel
+        self.info_panel = SelectedComboInfoPanel()
+        layout.addWidget(self.info_panel)
         
-        # Count
+        # Source Numbers Section
+        source_group = QGroupBox("Source Numbers")
+        source_layout = QVBoxLayout(source_group)
+        
         self.source_count_label = QLabel("0 numbers loaded")
         self.source_count_label.setProperty("subheading", True)
-        layout.addWidget(self.source_count_label)
+        source_layout.addWidget(self.source_count_label)
         
-        # Source list
         self.source_list = QListWidget()
         self.source_list.setSelectionMode(QListWidget.NoSelection)
-        layout.addWidget(self.source_list)
+        source_layout.addWidget(self.source_list)
+        
+        layout.addWidget(source_group)
         
         return panel
     
@@ -257,7 +369,11 @@ class FindTab(QWidget):
         self.load_btn.clicked.connect(self._on_load_numbers)
         self.excel_btn.clicked.connect(self._on_grab_from_excel)
         self.find_btn.clicked.connect(self._on_find_combinations)
-        self.results_list.currentRowChanged.connect(self._on_result_selected)
+        
+        # Connect both lists for selection
+        self.exact_list.currentRowChanged.connect(self._on_exact_selected)
+        self.approx_list.currentRowChanged.connect(self._on_approx_selected)
+        
         self.finalize_btn.clicked.connect(self._on_finalize)
     
     def _on_mode_changed(self, index: int):
@@ -356,7 +472,8 @@ class FindTab(QWidget):
     def _set_items(self, items: List[NumberItem]):
         """Set the source items and update UI."""
         self.items = items
-        self.combinations.clear()
+        self.exact_combinations.clear()
+        self.approx_combinations.clear()
         self.selected_combo = None
         
         # Update source list
@@ -369,9 +486,12 @@ class FindTab(QWidget):
         self.source_count_label.setText(f"{len(items)} numbers loaded")
         
         # Clear results
-        self.results_list.clear()
-        self.results_count_label.setText("No results yet")
+        self.exact_list.clear()
+        self.approx_list.clear()
+        self.exact_count_label.setText("0 exact matches")
+        self.approx_count_label.setText("0 approximate matches")
         self.finalize_btn.setEnabled(False)
+        self.info_panel.update_info(None)
     
     def _on_find_combinations(self):
         """Start searching for combinations."""
@@ -399,16 +519,22 @@ class FindTab(QWidget):
             self._show_status(f"Error: {errors[0]}", error=True)
             return
         
+        self.current_target = params['target']
+        
         # Quick check
         if not quick_check_possible(available, params['target'], params['buffer']):
             self._show_status("No valid combinations possible", error=True)
             return
         
         # Clear previous results
-        self.combinations.clear()
-        self.results_list.clear()
+        self.exact_combinations.clear()
+        self.approx_combinations.clear()
+        self.exact_list.clear()
+        self.approx_list.clear()
         self.selected_combo = None
         self.finalize_btn.setEnabled(False)
+        self.info_panel.update_info(None)
+        self._clear_highlights()
         
         # Create solver
         solver = SubsetSumSolver(
@@ -431,46 +557,84 @@ class FindTab(QWidget):
     
     def _on_combo_found(self, combo: Combination):
         """Handle a new combination found."""
-        self.combinations.append(combo)
+        is_exact = abs(combo.difference) < 0.001  # Effectively zero
         
-        # Add to list
+        # Create list item text
         item_text = (
             f"[{combo.size}] "
             f"{', '.join(str(i.value) for i in combo.items)} "
-            f"= {combo.sum:.2f} ({combo.difference_display})"
+            f"= {combo.sum:.2f}"
         )
+        
+        if not is_exact:
+            item_text += f" ({combo.difference_display})"
+        
         list_item = QListWidgetItem(item_text)
         list_item.setData(Qt.UserRole, combo)
-        self.results_list.addItem(list_item)
         
-        self.results_count_label.setText(f"{len(self.combinations)} combinations found")
+        if is_exact:
+            self.exact_combinations.append(combo)
+            self.exact_list.addItem(list_item)
+            self.exact_count_label.setText(f"{len(self.exact_combinations)} exact matches")
+        else:
+            self.approx_combinations.append(combo)
+            self.approx_list.addItem(list_item)
+            self.approx_count_label.setText(f"{len(self.approx_combinations)} approximate matches")
     
     def _on_search_finished(self, total_found: int, total_checked: int):
         """Handle search completion."""
         self.find_btn.setEnabled(True)
         self.find_btn.setText("🔍 Find Combinations")
         
-        if self.combinations:
-            self._show_status(f"Found {len(self.combinations)} combinations")
+        total = len(self.exact_combinations) + len(self.approx_combinations)
+        if total > 0:
+            self._show_status(
+                f"Found {len(self.exact_combinations)} exact, "
+                f"{len(self.approx_combinations)} approximate"
+            )
         else:
             self._show_status("No combinations found", error=True)
     
-    def _on_result_selected(self, row: int):
-        """Handle result selection."""
-        if row < 0 or row >= len(self.combinations):
+    def _on_exact_selected(self, row: int):
+        """Handle exact match selection."""
+        # Clear approx selection
+        self.approx_list.blockSignals(True)
+        self.approx_list.clearSelection()
+        self.approx_list.setCurrentRow(-1)
+        self.approx_list.blockSignals(False)
+        
+        self._handle_selection(self.exact_combinations, row)
+    
+    def _on_approx_selected(self, row: int):
+        """Handle approximate match selection."""
+        # Clear exact selection
+        self.exact_list.blockSignals(True)
+        self.exact_list.clearSelection()
+        self.exact_list.setCurrentRow(-1)
+        self.exact_list.blockSignals(False)
+        
+        self._handle_selection(self.approx_combinations, row)
+    
+    def _handle_selection(self, combo_list: List[Combination], row: int):
+        """Handle combination selection from either list."""
+        if row < 0 or row >= len(combo_list):
             self.selected_combo = None
             self.finalize_btn.setEnabled(False)
+            self.info_panel.update_info(None)
             self._clear_highlights()
             return
         
-        self.selected_combo = self.combinations[row]
+        self.selected_combo = combo_list[row]
         self.finalize_btn.setEnabled(True)
+        
+        # Update info panel
+        self.info_panel.update_info(self.selected_combo)
         
         # Highlight source items
         self._highlight_combination(self.selected_combo)
     
     def _highlight_combination(self, combo: Combination):
-        """Highlight the items in a combination in the source list."""
+        """Highlight the items in a combination in the source list with prominent color."""
         combo_indices = {item.index for item in combo.items}
         
         for i in range(self.source_list.count()):
@@ -478,15 +642,30 @@ class FindTab(QWidget):
             item: NumberItem = list_item.data(Qt.UserRole)
             
             if item.is_finalized:
-                # Keep finalized color
-                color = item.finalized_color
-                list_item.setBackground(QColor(*color))
+                # Keep finalized color with grey text
+                if item.finalized_color:
+                    color = QColor(*item.finalized_color)
+                    list_item.setBackground(color)
+                    contrast = get_contrast_color(item.finalized_color)
+                    list_item.setForeground(QColor(*contrast))
             elif item.index in combo_indices:
-                # Highlight as selected
-                list_item.setBackground(QColor("#fff3bf"))
+                # Prominent orange highlight for selected combo
+                list_item.setBackground(QColor(*SELECTION_HIGHLIGHT_COLOR))
+                list_item.setForeground(QColor(0, 0, 0))
+                
+                # Make font bold
+                font = list_item.font()
+                font.setBold(True)
+                list_item.setFont(font)
             else:
                 # Clear highlight
                 list_item.setBackground(QColor("transparent"))
+                list_item.setForeground(QColor("#343a40"))
+                
+                # Remove bold
+                font = list_item.font()
+                font.setBold(False)
+                list_item.setFont(font)
     
     def _clear_highlights(self):
         """Clear temporary highlights (keep finalized colors)."""
@@ -494,11 +673,23 @@ class FindTab(QWidget):
             list_item = self.source_list.item(i)
             item: NumberItem = list_item.data(Qt.UserRole)
             
+            font = list_item.font()
+            font.setBold(False)
+            list_item.setFont(font)
+            
             if item.is_finalized:
-                color = item.finalized_color
-                list_item.setBackground(QColor(*color))
+                if item.finalized_color:
+                    color = QColor(*item.finalized_color)
+                    list_item.setBackground(color)
+                    contrast = get_contrast_color(item.finalized_color)
+                    list_item.setForeground(QColor(*contrast))
+                else:
+                    # Grey out finalized without specific color
+                    list_item.setBackground(QColor(*DISABLED_COMBO_COLOR))
+                    list_item.setForeground(QColor(*FINALIZED_TEXT_COLOR))
             else:
                 list_item.setBackground(QColor("transparent"))
+                list_item.setForeground(QColor("#343a40"))
     
     def _on_finalize(self):
         """Finalize the selected combination."""
@@ -508,10 +699,12 @@ class FindTab(QWidget):
         # Get next color
         color, color_name = self.color_manager.get_next_color()
         
-        # Mark items as finalized
+        # Get indices of finalized items
+        finalized_indices: Set[int] = set()
         for item in self.selected_combo.items:
             item.is_finalized = True
             item.finalized_color = color
+            finalized_indices.add(item.index)
         
         # Create finalized record
         finalized = FinalizedCombination(
@@ -522,7 +715,7 @@ class FindTab(QWidget):
         )
         self.finalized.append(finalized)
         
-        # Update source list colors
+        # Update source list colors (grey out finalized)
         self._update_source_colors()
         
         # Highlight in Excel if connected
@@ -533,23 +726,64 @@ class FindTab(QWidget):
         # Emit signal for summary tab
         self.combination_finalized.emit(finalized)
         
-        # Remove finalized combo from results
-        current_row = self.results_list.currentRow()
-        self.results_list.takeItem(current_row)
-        self.combinations.pop(current_row)
+        # Remove/disable combinations that use any finalized numbers
+        self._remove_invalid_combinations(finalized_indices)
         
         # Clear selection
         self.selected_combo = None
         self.finalize_btn.setEnabled(False)
+        self.info_panel.update_info(None)
         
         self._show_status(f"Finalized with {color_name}")
-        self.results_count_label.setText(f"{len(self.combinations)} combinations remaining")
+    
+    def _remove_invalid_combinations(self, finalized_indices: Set[int]):
+        """Remove or grey out combinations that use any of the finalized numbers."""
+        # Process exact matches
+        self._filter_combination_list(
+            self.exact_list, 
+            self.exact_combinations, 
+            finalized_indices
+        )
+        self.exact_count_label.setText(f"{len(self.exact_combinations)} exact matches")
+        
+        # Process approximate matches
+        self._filter_combination_list(
+            self.approx_list,
+            self.approx_combinations,
+            finalized_indices
+        )
+        self.approx_count_label.setText(f"{len(self.approx_combinations)} approximate matches")
+    
+    def _filter_combination_list(
+        self,
+        list_widget: QListWidget,
+        combo_list: List[Combination],
+        finalized_indices: Set[int]
+    ):
+        """Remove combinations that contain any finalized indices."""
+        # Find indices to remove (iterate in reverse to avoid index shifting)
+        indices_to_remove = []
+        
+        for i, combo in enumerate(combo_list):
+            combo_item_indices = {item.index for item in combo.items}
+            if combo_item_indices & finalized_indices:  # If there's any overlap
+                indices_to_remove.append(i)
+        
+        # Remove in reverse order
+        for i in reversed(indices_to_remove):
+            list_widget.takeItem(i)
+            combo_list.pop(i)
     
     def _update_source_colors(self):
-        """Update all source list item colors."""
+        """Update all source list item colors - grey out finalized items."""
         for i in range(self.source_list.count()):
             list_item = self.source_list.item(i)
             item: NumberItem = list_item.data(Qt.UserRole)
+            
+            # Remove bold from all
+            font = list_item.font()
+            font.setBold(False)
+            list_item.setFont(font)
             
             if item.is_finalized and item.finalized_color:
                 color = QColor(*item.finalized_color)
@@ -558,6 +792,14 @@ class FindTab(QWidget):
                 # Set text color for contrast
                 contrast = get_contrast_color(item.finalized_color)
                 list_item.setForeground(QColor(*contrast))
+                
+                # Update display text to show finalized status
+                original_text = item.display_label
+                list_item.setText(f"✓ {original_text}")
+            elif item.is_finalized:
+                # Grey out without color
+                list_item.setBackground(QColor(*DISABLED_COMBO_COLOR))
+                list_item.setForeground(QColor(*FINALIZED_TEXT_COLOR))
             else:
                 list_item.setBackground(QColor("transparent"))
                 list_item.setForeground(QColor("#343a40"))

@@ -134,6 +134,69 @@ class ExcelHandler:
         except:
             return False
     
+    def get_sheets(self, workbook_name: str = None) -> List[str]:
+        """
+        Get list of sheet names in a workbook.
+        
+        Args:
+            workbook_name: Name of workbook, or None for current
+            
+        Returns:
+            List of sheet names
+        """
+        if not self.is_connected():
+            return []
+        
+        try:
+            if workbook_name:
+                wb = self.app.Workbooks(workbook_name)
+            elif self._workbook:
+                wb = self._workbook
+            else:
+                wb = self.app.ActiveWorkbook
+            
+            if wb:
+                return [sheet.Name for sheet in wb.Sheets]
+        except:
+            pass
+        return []
+    
+    def select_sheet(self, sheet_name: str) -> bool:
+        """
+        Select a specific sheet in the current workbook.
+        
+        Args:
+            sheet_name: Name of the sheet to select
+            
+        Returns:
+            True if selected successfully
+        """
+        if not self._workbook:
+            return False
+        
+        try:
+            self._sheet = self._workbook.Sheets(sheet_name)
+            self._sheet.Activate()
+            self.connection.sheet_name = sheet_name
+            return True
+        except:
+            return False
+    
+    def get_active_sheet_name(self) -> Optional[str]:
+        """
+        Get the name of the currently active sheet.
+        
+        Returns:
+            Sheet name or None
+        """
+        if not self._workbook:
+            return None
+        
+        try:
+            return self._workbook.ActiveSheet.Name
+        except:
+            return None
+    
     def get_active_workbook_info(self) -> Optional[Dict[str, str]]:
         """
         Get info about the currently active workbook.
