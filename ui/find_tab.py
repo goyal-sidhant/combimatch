@@ -181,6 +181,8 @@ class FindTab(QWidget):
         self.solver_thread: Optional[SolverThread] = None
         self.input_mode = InputMode.LINE_SEPARATED
         self.current_target: float = 0.0
+        self.exact_headers: dict = {}  # size -> row index of header
+        self.approx_headers: dict = {}  # size -> row index of header
         
         self._init_ui()
         self._connect_signals()
@@ -287,7 +289,7 @@ class FindTab(QWidget):
         params_layout.addWidget(QLabel("Max Results:"), 4, 0)
         self.max_results_input = QSpinBox()
         self.max_results_input.setRange(1, 10000)
-        self.max_results_input.setValue(100)
+        self.max_results_input.setValue(25)
         params_layout.addWidget(self.max_results_input, 4, 1)
         
         layout.addWidget(params_group)
@@ -557,6 +559,8 @@ class FindTab(QWidget):
         self.approx_combinations.clear()
         self.exact_list.clear()
         self.approx_list.clear()
+        self.exact_headers.clear()
+        self.approx_headers.clear()
         self.selected_combo = None
         self.finalize_btn.setEnabled(False)
         self.info_panel.update_info(None)
@@ -860,16 +864,13 @@ class FindTab(QWidget):
         """Add a combination to the list with size headers."""
         size = combo.size
         
-        # Check if we need to add a header for this size
-        need_header = True
-        for existing_combo in combo_list:
-            if existing_combo.size == size:
-                need_header = False
-                break
+        # Get the right headers dict
+        headers_dict = self.exact_headers if combo_type == "exact" else self.approx_headers
         
-        # Add header if this is first combo of this size
-        if need_header:
-            header_text = f"═══ {size} Number{'s' if size > 1 else ''} ═══"
+        # Check if we need to add a header for this size
+        if size not in headers_dict:
+            # Add header - this is first combo of this size
+            header_text = f"═══ {size} Number{'s' if size > 1 else ''} (1 found) ═══"
             header_item = QListWidgetItem(header_text)
             header_item.setFlags(Qt.NoItemFlags)  # Not selectable
             header_item.setBackground(QColor(230, 230, 230))
@@ -877,7 +878,18 @@ class FindTab(QWidget):
             font = header_item.font()
             font.setBold(True)
             header_item.setFont(font)
+            
+            # Store the row index for this header
+            headers_dict[size] = list_widget.count()
             list_widget.addItem(header_item)
+        else:
+            # Update existing header with new count
+            count_this_size = sum(1 for c in combo_list if c.size == size) + 1  # +1 for current combo
+            header_row = headers_dict[size]
+            header_item = list_widget.item(header_row)
+            if header_item:
+                header_text = f"═══ {size} Number{'s' if size > 1 else ''} ({count_this_size} found) ═══"
+                header_item.setText(header_text)
         
         # Add the combination
         combo_list.append(combo)
