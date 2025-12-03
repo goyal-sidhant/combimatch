@@ -241,6 +241,7 @@ class ExcelHandler:
         Read numbers from the current Excel selection.
         
         Respects filters - only reads visible cells.
+        Uses bulk reading for performance.
         
         Returns:
             Tuple of (list of NumberItem, list of warning messages)
@@ -268,44 +269,65 @@ class ExcelHandler:
             
             index = 0
             
-            # Iterate through areas (non-contiguous selections)
+            # Collect cell info in bulk per area
             for area in visible_cells.Areas:
-                for cell in area:
-                    row = cell.Row
-                    col = cell.Column
-                    col_letter = self._column_letter(col)
-                    columns_used.add(col)
-                    
-                    # Get cell value
-                    value = cell.Value
-                    
-                    # Skip empty, text, or error cells
-                    if value is None:
+                # Get area dimensions
+                start_row = area.Row
+                start_col = area.Column
+                num_rows = area.Rows.Count
+                num_cols = area.Columns.Count
+                
+                # Get all values in one call (much faster!)
+                if num_rows == 1 and num_cols == 1:
+                    # Single cell - Value is just the value
+                    values = [[area.Value]]
+                else:
+                    # Multiple cells - Value is a tuple of tuples
+                    values = area.Value
+                    if values is None:
                         continue
-                    
-                    if isinstance(value, str):
-                        # Try to parse as number
-                        try:
-                            value = float(value.replace(',', ''))
-                        except ValueError:
+                    # Ensure it's a list of lists
+                    if not isinstance(values, tuple):
+                        values = [[values]]
+                    else:
+                        values = [list(row) if isinstance(row, tuple) else [row] for row in values]
+                
+                # Process the values
+                for r_idx, row_values in enumerate(values):
+                    if row_values is None:
+                        continue
+                    for c_idx, value in enumerate(row_values):
+                        actual_row = start_row + r_idx
+                        actual_col = start_col + c_idx
+                        col_letter = self._column_letter(actual_col)
+                        columns_used.add(actual_col)
+                        
+                        # Skip empty values
+                        if value is None:
                             continue
-                    
-                    try:
-                        numeric_value = float(value)
                         
-                        item = NumberItem(
-                            value=numeric_value,
-                            index=index,
-                            row=row,
-                            column=col_letter,
-                            source=ItemSource.EXCEL
-                        )
-                        items.append(item)
-                        index += 1
+                        # Try to convert to number
+                        if isinstance(value, str):
+                            try:
+                                value = float(value.replace(',', ''))
+                            except ValueError:
+                                continue
                         
-                    except (TypeError, ValueError):
-                        # Skip non-numeric values
-                        continue
+                        try:
+                            numeric_value = float(value)
+                            
+                            item = NumberItem(
+                                value=numeric_value,
+                                index=index,
+                                row=actual_row,
+                                column=col_letter,
+                                source=ItemSource.EXCEL
+                            )
+                            items.append(item)
+                            index += 1
+                            
+                        except (TypeError, ValueError):
+                            continue
             
             # Warn if multiple columns
             if len(columns_used) > 1:
@@ -317,7 +339,7 @@ class ExcelHandler:
             
         except Exception as e:
             return items, [f"Error reading selection: {str(e)}"]
-    
+        
     def highlight_cell(
         self,
         row: int,
