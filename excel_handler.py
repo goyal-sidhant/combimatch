@@ -261,6 +261,39 @@ class ExcelHandler:
             # Check for multiple columns
             columns_used = set()
             
+            # Check if single cell selected - handle directly without SpecialCells
+            try:
+                if selection.Count == 1:
+                    # Single cell - process directly
+                    row = selection.Row
+                    col = selection.Column
+                    col_letter = self._column_letter(col)
+                    value = selection.Value
+                    
+                    if value is not None:
+                        if isinstance(value, str):
+                            try:
+                                value = float(value.replace(',', ''))
+                            except ValueError:
+                                return items, ["Selected cell is not a number"]
+                        
+                        try:
+                            numeric_value = float(value)
+                            item = NumberItem(
+                                value=numeric_value,
+                                index=0,
+                                row=row,
+                                column=col_letter,
+                                source=ItemSource.EXCEL
+                            )
+                            return [item], []
+                        except (TypeError, ValueError):
+                            return items, ["Selected cell is not a number"]
+                    else:
+                        return items, ["Selected cell is empty"]
+            except:
+                pass  # Not a single cell or Count failed, continue with normal flow
+            
             # Get visible cells only (respects filters)
             try:
                 visible_cells = selection.SpecialCells(12)  # xlCellTypeVisible = 12

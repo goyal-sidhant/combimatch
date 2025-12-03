@@ -672,9 +672,9 @@ class FindTab(QWidget):
                     contrast = get_contrast_color(item.finalized_color)
                     list_item.setForeground(QColor(*contrast))
             elif item.index in combo_indices:
-                # Prominent orange highlight for selected combo
-                list_item.setBackground(QColor(*SELECTION_HIGHLIGHT_COLOR))
-                list_item.setForeground(QColor(0, 0, 0))
+            # Prominent orange highlight for selected combo
+                list_item.setBackground(QBrush(QColor(*SELECTION_HIGHLIGHT_COLOR)))
+                list_item.setForeground(QBrush(QColor(0, 0, 0)))
                 
                 # Make font bold
                 font = list_item.font()
@@ -682,8 +682,8 @@ class FindTab(QWidget):
                 list_item.setFont(font)
             else:
                 # Clear highlight
-                list_item.setBackground(QColor("transparent"))
-                list_item.setForeground(QColor("#343a40"))
+                list_item.setBackground(QBrush())
+                list_item.setForeground(QBrush(QColor("#343a40")))
                 
                 # Remove bold
                 font = list_item.font()
@@ -702,17 +702,16 @@ class FindTab(QWidget):
             
             if item.is_finalized:
                 if item.finalized_color:
-                    color = QColor(*item.finalized_color)
-                    list_item.setBackground(color)
+                    list_item.setBackground(QBrush(QColor(*item.finalized_color)))
                     contrast = get_contrast_color(item.finalized_color)
-                    list_item.setForeground(QColor(*contrast))
+                    list_item.setForeground(QBrush(QColor(*contrast)))
                 else:
                     # Grey out finalized without specific color
-                    list_item.setBackground(QColor(*DISABLED_COMBO_COLOR))
-                    list_item.setForeground(QColor(*FINALIZED_TEXT_COLOR))
+                    list_item.setBackground(QBrush(QColor(*DISABLED_COMBO_COLOR)))
+                    list_item.setForeground(QBrush(QColor(*FINALIZED_TEXT_COLOR)))
             else:
-                list_item.setBackground(QColor("transparent"))
-                list_item.setForeground(QColor("#343a40"))
+                list_item.setBackground(QBrush())
+                list_item.setForeground(QBrush(QColor("#343a40")))
     
     def _on_finalize(self):
         """Finalize the selected combination."""
@@ -809,23 +808,22 @@ class FindTab(QWidget):
             list_item.setFont(font)
             
             if item.is_finalized and item.finalized_color:
-                color = QColor(*item.finalized_color)
-                list_item.setBackground(color)
+                list_item.setBackground(QBrush(QColor(*item.finalized_color)))
                 
                 # Set text color for contrast
                 contrast = get_contrast_color(item.finalized_color)
-                list_item.setForeground(QColor(*contrast))
+                list_item.setForeground(QBrush(QColor(*contrast)))
                 
                 # Update display text to show finalized status
                 original_text = item.display_label
                 list_item.setText(f"✓ {original_text}")
             elif item.is_finalized:
                 # Grey out without color
-                list_item.setBackground(QColor(*DISABLED_COMBO_COLOR))
-                list_item.setForeground(QColor(*FINALIZED_TEXT_COLOR))
+                list_item.setBackground(QBrush(QColor(*DISABLED_COMBO_COLOR)))
+                list_item.setForeground(QBrush(QColor(*FINALIZED_TEXT_COLOR)))
             else:
-                list_item.setBackground(QColor("transparent"))
-                list_item.setForeground(QColor("#343a40"))
+                list_item.setBackground(QBrush())
+                list_item.setForeground(QBrush(QColor("#343a40")))
     
     def _on_progress(self, current_size: int, total_checked: int):
         """Handle progress update from solver."""
