@@ -52,13 +52,18 @@ class SolverThread(QThread):
     def run(self):
         """Run the solver and emit results."""
         total_found = 0
-        total_checked = 0
+        
+        # Set up progress callback
+        def on_progress(current_size, total_checked):
+            self.progress.emit(current_size, total_checked)
+        
+        self.solver.progress_callback = on_progress
         
         for combo in self.solver.find_combinations_generator():
             total_found += 1
             self.result_found.emit(combo)
         
-        self.finished_signal.emit(total_found, total_checked)
+        self.finished_signal.emit(total_found, 0)
     
     def stop(self):
         """Request solver to stop."""
@@ -285,6 +290,19 @@ class FindTab(QWidget):
         self.find_btn.setMinimumHeight(40)
         layout.addWidget(self.find_btn)
         
+        # Stop Button (hidden by default)
+        self.stop_btn = QPushButton("⏹ Stop Search")
+        self.stop_btn.setMinimumHeight(40)
+        self.stop_btn.setStyleSheet("background-color: #ff6b6b;")
+        self.stop_btn.setVisible(False)
+        layout.addWidget(self.stop_btn)
+        
+        # Progress label
+        self.progress_label = QLabel("")
+        self.progress_label.setProperty("subheading", True)
+        self.progress_label.setVisible(False)
+        layout.addWidget(self.progress_label)
+        
         # Status
         self.status_label = QLabel("")
         self.status_label.setProperty("subheading", True)
@@ -375,6 +393,7 @@ class FindTab(QWidget):
         self.approx_list.currentRowChanged.connect(self._on_approx_selected)
         
         self.finalize_btn.clicked.connect(self._on_finalize)
+        self.stop_btn.clicked.connect(self._on_stop_clicked)
     
     def _on_mode_changed(self, index: int):
         """Handle input mode change."""
@@ -547,12 +566,15 @@ class FindTab(QWidget):
         )
         
         # Run in thread
-        self.find_btn.setEnabled(False)
-        self.find_btn.setText("Searching...")
+        self.find_btn.setVisible(False)
+        self.stop_btn.setVisible(True)
+        self.progress_label.setVisible(True)
+        self.progress_label.setText("Starting search...")
         
         self.solver_thread = SolverThread(solver)
         self.solver_thread.result_found.connect(self._on_combo_found)
         self.solver_thread.finished_signal.connect(self._on_search_finished)
+        self.solver_thread.progress.connect(self._on_progress)
         self.solver_thread.start()
     
     def _on_combo_found(self, combo: Combination):
@@ -583,8 +605,9 @@ class FindTab(QWidget):
     
     def _on_search_finished(self, total_found: int, total_checked: int):
         """Handle search completion."""
-        self.find_btn.setEnabled(True)
-        self.find_btn.setText("🔍 Find Combinations")
+        self.find_btn.setVisible(True)
+        self.stop_btn.setVisible(False)
+        self.progress_label.setVisible(False)
         
         total = len(self.exact_combinations) + len(self.approx_combinations)
         if total > 0:
@@ -804,6 +827,19 @@ class FindTab(QWidget):
                 list_item.setBackground(QColor("transparent"))
                 list_item.setForeground(QColor("#343a40"))
     
+    def _on_progress(self, current_size: int, total_checked: int):
+        """Handle progress update from solver."""
+        self.progress_label.setText(
+            f"Checking {current_size}-number combinations... "
+            f"({total_checked:,} checked)"
+        )
+    
+    def _on_stop_clicked(self):
+        """Handle stop button click."""
+        if self.solver_thread:
+            self.solver_thread.stop()
+            self.progress_label.setText("Stopping...")
+
     def _show_status(self, message: str, error: bool = False):
         """Show a status message."""
         self.status_label.setText(message)

@@ -269,65 +269,114 @@ class ExcelHandler:
             
             index = 0
             
-            # Collect cell info in bulk per area
+            # Collect cell info - process each area
             for area in visible_cells.Areas:
-                # Get area dimensions
-                start_row = area.Row
-                start_col = area.Column
-                num_rows = area.Rows.Count
-                num_cols = area.Columns.Count
-                
-                # Get all values in one call (much faster!)
-                if num_rows == 1 and num_cols == 1:
-                    # Single cell - Value is just the value
-                    values = [[area.Value]]
-                else:
-                    # Multiple cells - Value is a tuple of tuples
-                    values = area.Value
-                    if values is None:
+                try:
+                    # Get area dimensions
+                    start_row = area.Row
+                    start_col = area.Column
+                    num_rows = area.Rows.Count
+                    num_cols = area.Columns.Count
+                    
+                    # Get all values in one call
+                    raw_values = area.Value
+                    
+                    # Convert to consistent 2D list format
+                    if raw_values is None:
                         continue
-                    # Ensure it's a list of lists
-                    if not isinstance(values, tuple):
-                        values = [[values]]
+                    elif num_rows == 1 and num_cols == 1:
+                        # Single cell - just a value
+                        values = [[raw_values]]
+                    elif num_rows == 1:
+                        # Single row - tuple of values
+                        if isinstance(raw_values, tuple):
+                            values = [list(raw_values)]
+                        else:
+                            values = [[raw_values]]
+                    elif num_cols == 1:
+                        # Single column - tuple of single-value tuples
+                        if isinstance(raw_values, tuple):
+                            values = [[v] if not isinstance(v, tuple) else [v[0]] for v in raw_values]
+                        else:
+                            values = [[raw_values]]
                     else:
-                        values = [list(row) if isinstance(row, tuple) else [row] for row in values]
-                
-                # Process the values
-                for r_idx, row_values in enumerate(values):
-                    if row_values is None:
-                        continue
-                    for c_idx, value in enumerate(row_values):
-                        actual_row = start_row + r_idx
-                        actual_col = start_col + c_idx
-                        col_letter = self._column_letter(actual_col)
-                        columns_used.add(actual_col)
-                        
-                        # Skip empty values
-                        if value is None:
+                        # Multiple rows and columns - tuple of tuples
+                        if isinstance(raw_values, tuple):
+                            values = [list(row) if isinstance(row, tuple) else [row] for row in raw_values]
+                        else:
+                            values = [[raw_values]]
+                    
+                    # Process the values
+                    for r_idx, row_values in enumerate(values):
+                        if row_values is None:
                             continue
-                        
-                        # Try to convert to number
-                        if isinstance(value, str):
-                            try:
-                                value = float(value.replace(',', ''))
-                            except ValueError:
+                        for c_idx, value in enumerate(row_values):
+                            actual_row = start_row + r_idx
+                            actual_col = start_col + c_idx
+                            col_letter = self._column_letter(actual_col)
+                            columns_used.add(actual_col)
+                            
+                            # Skip empty values
+                            if value is None:
                                 continue
-                        
-                        try:
-                            numeric_value = float(value)
                             
-                            item = NumberItem(
-                                value=numeric_value,
-                                index=index,
-                                row=actual_row,
-                                column=col_letter,
-                                source=ItemSource.EXCEL
-                            )
-                            items.append(item)
-                            index += 1
+                            # Try to convert to number
+                            if isinstance(value, str):
+                                try:
+                                    value = float(value.replace(',', ''))
+                                except ValueError:
+                                    continue
                             
-                        except (TypeError, ValueError):
-                            continue
+                            try:
+                                numeric_value = float(value)
+                                
+                                item = NumberItem(
+                                    value=numeric_value,
+                                    index=index,
+                                    row=actual_row,
+                                    column=col_letter,
+                                    source=ItemSource.EXCEL
+                                )
+                                items.append(item)
+                                index += 1
+                                
+                            except (TypeError, ValueError):
+                                continue
+                                
+                except:
+                    # If bulk read fails for this area, fall back to cell-by-cell
+                    try:
+                        for cell in area:
+                            row = cell.Row
+                            col = cell.Column
+                            col_letter = self._column_letter(col)
+                            columns_used.add(col)
+                            
+                            value = cell.Value
+                            if value is None:
+                                continue
+                            
+                            if isinstance(value, str):
+                                try:
+                                    value = float(value.replace(',', ''))
+                                except ValueError:
+                                    continue
+                            
+                            try:
+                                numeric_value = float(value)
+                                item = NumberItem(
+                                    value=numeric_value,
+                                    index=index,
+                                    row=row,
+                                    column=col_letter,
+                                    source=ItemSource.EXCEL
+                                )
+                                items.append(item)
+                                index += 1
+                            except (TypeError, ValueError):
+                                continue
+                    except:
+                        continue
             
             # Warn if multiple columns
             if len(columns_used) > 1:
@@ -339,7 +388,7 @@ class ExcelHandler:
             
         except Exception as e:
             return items, [f"Error reading selection: {str(e)}"]
-        
+            
     def highlight_cell(
         self,
         row: int,
