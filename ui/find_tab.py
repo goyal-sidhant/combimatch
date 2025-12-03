@@ -72,7 +72,14 @@ class SolverThread(QThread):
 
 class SelectedComboInfoPanel(QFrame):
     """Panel showing details of the currently selected combination."""
-    
+    @staticmethod
+    def _get_combo_avg_position(combo: Combination) -> float:
+        """Calculate average index position of items in a combination."""
+        if not combo.items:
+            return 0
+        return sum(item.index for item in combo.items) / len(combo.items)
+
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
@@ -578,30 +585,15 @@ class FindTab(QWidget):
         self.solver_thread.start()
     
     def _on_combo_found(self, combo: Combination):
-        """Handle a new combination found."""
-        is_exact = abs(combo.difference) < 0.001  # Effectively zero
-        
-        # Create list item text
-        item_text = (
-            f"[{combo.size}] "
-            f"{', '.join(str(i.value) for i in combo.items)} "
-            f"= {combo.sum:.2f}"
-        )
-        
-        if not is_exact:
-            item_text += f" ({combo.difference_display})"
-        
-        list_item = QListWidgetItem(item_text)
-        list_item.setData(Qt.UserRole, combo)
-        
-        if is_exact:
-            self.exact_combinations.append(combo)
-            self.exact_list.addItem(list_item)
-            self.exact_count_label.setText(f"{len(self.exact_combinations)} exact matches")
-        else:
-            self.approx_combinations.append(combo)
-            self.approx_list.addItem(list_item)
-            self.approx_count_label.setText(f"{len(self.approx_combinations)} approximate matches")
+            """Handle a new combination found."""
+            is_exact = abs(combo.difference) < 0.001  # Effectively zero
+            
+            if is_exact:
+                self._add_combo_to_list(combo, self.exact_list, self.exact_combinations, "exact")
+                self.exact_count_label.setText(f"{len(self.exact_combinations)} exact matches")
+            else:
+                self._add_combo_to_list(combo, self.approx_list, self.approx_combinations, "approx")
+                self.approx_count_label.setText(f"{len(self.approx_combinations)} approximate matches")
     
     def _on_search_finished(self, total_found: int, total_checked: int):
         """Handle search completion."""
@@ -617,37 +609,57 @@ class FindTab(QWidget):
             )
         else:
             self._show_status("No combinations found", error=True)
-    
+
     def _on_exact_selected(self, row: int):
         """Handle exact match selection."""
+        if row < 0:
+            return
+        
+        # Check if header was clicked (has no data)
+        item = self.exact_list.item(row)
+        if item is None or item.data(Qt.UserRole) is None:
+            self.exact_list.clearSelection()
+            return
+        
         # Clear approx selection
         self.approx_list.blockSignals(True)
         self.approx_list.clearSelection()
         self.approx_list.setCurrentRow(-1)
         self.approx_list.blockSignals(False)
         
-        self._handle_selection(self.exact_combinations, row)
+        combo = item.data(Qt.UserRole)
+        self._handle_combo_selection(combo)
     
     def _on_approx_selected(self, row: int):
         """Handle approximate match selection."""
+        if row < 0:
+            return
+        
+        # Check if header was clicked (has no data)
+        item = self.approx_list.item(row)
+        if item is None or item.data(Qt.UserRole) is None:
+            self.approx_list.clearSelection()
+            return
+        
         # Clear exact selection
         self.exact_list.blockSignals(True)
         self.exact_list.clearSelection()
         self.exact_list.setCurrentRow(-1)
         self.exact_list.blockSignals(False)
         
-        self._handle_selection(self.approx_combinations, row)
+        combo = item.data(Qt.UserRole)
+        self._handle_combo_selection(combo)
     
-    def _handle_selection(self, combo_list: List[Combination], row: int):
-        """Handle combination selection from either list."""
-        if row < 0 or row >= len(combo_list):
+    def _handle_combo_selection(self, combo: Combination):
+        """Handle combination selection."""
+        if combo is None:
             self.selected_combo = None
             self.finalize_btn.setEnabled(False)
             self.info_panel.update_info(None)
             self._clear_highlights()
             return
         
-        self.selected_combo = combo_list[row]
+        self.selected_combo = combo
         self.finalize_btn.setEnabled(True)
         
         # Update info panel
@@ -664,32 +676,38 @@ class FindTab(QWidget):
             list_item = self.source_list.item(i)
             item: NumberItem = list_item.data(Qt.UserRole)
             
+            font = list_item.font()
+            
             if item.is_finalized:
-                # Keep finalized color with grey text
+                # Keep finalized styling
                 if item.finalized_color:
-                    color = QColor(*item.finalized_color)
-                    list_item.setBackground(color)
+                    list_item.setBackground(QColor(*item.finalized_color))
                     contrast = get_contrast_color(item.finalized_color)
                     list_item.setForeground(QColor(*contrast))
+                font.setBold(False)
+                # Text already has "✓" prefix from finalization
             elif item.index in combo_indices:
-            # Prominent orange highlight for selected combo
-                list_item.setBackground(QBrush(QColor(*SELECTION_HIGHLIGHT_COLOR)))
-                list_item.setForeground(QBrush(QColor(0, 0, 0)))
-                
-                # Make font bold
-                font = list_item.font()
+                # Selected combo item - add marker and orange background
+                list_item.setBackground(QColor(255, 165, 0))
+                list_item.setForeground(QColor(0, 0, 0))
                 font.setBold(True)
-                list_item.setFont(font)
+                # Add marker to text to force redraw
+                current_text = item.display_label
+                if not current_text.startswith("▶ "):
+                    list_item.setText(f"▶ {current_text}")
             else:
                 # Clear highlight
-                list_item.setBackground(QBrush())
-                list_item.setForeground(QBrush(QColor("#343a40")))
-                
-                # Remove bold
-                font = list_item.font()
+                list_item.setBackground(QColor(255, 255, 255))
+                list_item.setForeground(QColor(52, 58, 64))
                 font.setBold(False)
-                list_item.setFont(font)
-    
+                # Remove marker if present
+                current_text = list_item.text()
+                if current_text.startswith("▶ "):
+                    list_item.setText(current_text[2:])
+            
+            list_item.setFont(font)
+
+
     def _clear_highlights(self):
         """Clear temporary highlights (keep finalized colors)."""
         for i in range(self.source_list.count()):
@@ -837,6 +855,44 @@ class FindTab(QWidget):
         if self.solver_thread:
             self.solver_thread.stop()
             self.progress_label.setText("Stopping...")
+
+    def _add_combo_to_list(self, combo: Combination, list_widget: QListWidget, combo_list: List[Combination], combo_type: str):
+        """Add a combination to the list with size headers."""
+        size = combo.size
+        
+        # Check if we need to add a header for this size
+        need_header = True
+        for existing_combo in combo_list:
+            if existing_combo.size == size:
+                need_header = False
+                break
+        
+        # Add header if this is first combo of this size
+        if need_header:
+            header_text = f"═══ {size} Number{'s' if size > 1 else ''} ═══"
+            header_item = QListWidgetItem(header_text)
+            header_item.setFlags(Qt.NoItemFlags)  # Not selectable
+            header_item.setBackground(QColor(230, 230, 230))
+            header_item.setForeground(QColor(80, 80, 80))
+            font = header_item.font()
+            font.setBold(True)
+            header_item.setFont(font)
+            list_widget.addItem(header_item)
+        
+        # Add the combination
+        combo_list.append(combo)
+        
+        # Count how many of this size we have
+        count_this_size = sum(1 for c in combo_list if c.size == size)
+        
+        item_text = f"{count_this_size}. {', '.join(str(i.value) for i in combo.items)} = {combo.sum:.2f}"
+        
+        if combo_type == "approx":
+            item_text += f" ({combo.difference_display})"
+        
+        list_item = QListWidgetItem(item_text)
+        list_item.setData(Qt.UserRole, combo)
+        list_widget.addItem(list_item)
 
     def _show_status(self, message: str, error: bool = False):
         """Show a status message."""
