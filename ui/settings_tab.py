@@ -8,11 +8,11 @@ Contains:
 """
 
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QGroupBox, QComboBox, QFrame,
     QGridLayout, QMessageBox
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor
 
 from excel_handler import get_excel_handler, ExcelHandler
@@ -40,7 +40,9 @@ class SettingsTab(QWidget):
     """
     Settings and configuration tab.
     """
-    
+
+    excel_connected = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._init_ui()
@@ -287,6 +289,7 @@ class SettingsTab(QWidget):
                 self, "Connected",
                 "Successfully connected to Excel."
             )
+            self.excel_connected.emit()
         else:
             QMessageBox.warning(
                 self, "Connection Failed",

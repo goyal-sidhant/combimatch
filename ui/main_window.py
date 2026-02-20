@@ -84,7 +84,12 @@ class MainWindow(QMainWindow):
         self.find_tab.combination_finalized.connect(
             self.summary_tab.add_finalized
         )
-        
+
+        # Auto-switch find tab to Excel mode when connected
+        self.settings_tab.excel_connected.connect(
+            self.find_tab.switch_to_excel_mode
+        )
+
         # Update status on tab change
         self.tabs.currentChanged.connect(self._on_tab_changed)
     

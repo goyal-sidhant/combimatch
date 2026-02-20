@@ -8,7 +8,7 @@ Implements the combination finding algorithm with:
 - Sorted output by combination size
 """
 
-from typing import List, Generator, Optional, Callable
+from typing import List, Generator, Optional, Callable, Tuple
 from itertools import combinations
 from models import NumberItem, Combination, CombinationResult
 
@@ -55,7 +55,27 @@ class SubsetSumSolver:
         # Calculate bounds
         self.lower_bound = round(self.target - self.buffer, 2)
         self.upper_bound = round(self.target + self.buffer, 2)
-        
+
+        # Compute smart bounds to skip impossible sizes
+        original_min = self.min_size
+        original_max = self.max_size
+        values = [item.value for item in self.items]
+        smart_min, smart_max, skipped = compute_smart_bounds(
+            values, self.lower_bound, self.upper_bound,
+            self.min_size, self.max_size
+        )
+        self.min_size = smart_min
+        self.max_size = smart_max
+
+        self.bounds_info = {
+            'original_min': original_min,
+            'original_max': original_max,
+            'smart_min': smart_min,
+            'smart_max': smart_max,
+            'skipped_sizes': skipped,
+            'no_solution': smart_min > smart_max
+        }
+
         # Results container
         self.result = CombinationResult(
             target=self.target,
@@ -223,3 +243,64 @@ def quick_check_possible(
         return False
     
     return True
+
+
+def compute_smart_bounds(
+    values: List[float],
+    lower_bound: float,
+    upper_bound: float,
+    user_min_size: int,
+    user_max_size: int
+) -> Tuple[int, int, List[int]]:
+    """
+    Compute the tightest viable min and max combination sizes.
+
+    Uses cumulative sums of sorted values to determine which sizes
+    are mathematically impossible to reach the target range.
+
+    Args:
+        values: List of item values (already filtered, no finalized items)
+        lower_bound: target - buffer
+        upper_bound: target + buffer
+        user_min_size: User-specified minimum combination size
+        user_max_size: User-specified maximum combination size
+
+    Returns:
+        Tuple of (smart_min, smart_max, skipped_sizes)
+        If no solution is possible, smart_min > smart_max.
+    """
+    if not values:
+        return (1, 0, [])
+
+    n = len(values)
+
+    # --- Smart min: sort descending, cumulative sum ---
+    # Top-k values give the maximum possible sum for any k-item combination.
+    # If even that can't reach lower_bound, size k is impossible.
+    desc = sorted(values, reverse=True)
+    smart_min = n + 1  # Default: impossible
+    cumsum = 0.0
+    for k in range(1, n + 1):
+        cumsum += desc[k - 1]
+        if round(cumsum, 2) >= lower_bound:
+            smart_min = max(k, user_min_size)
+            break
+
+    # --- Smart max: sort ascending, cumulative sum ---
+    # Bottom-k values give the minimum possible sum for any k-item combination.
+    # If that already exceeds upper_bound, every k-item combo overshoots.
+    asc = sorted(values)
+    smart_max = min(user_max_size, n)  # Default: user's max or item count
+    cumsum = 0.0
+    for k in range(1, n + 1):
+        cumsum += asc[k - 1]
+        if round(cumsum, 2) > upper_bound:
+            smart_max = min(k - 1, user_max_size, n)
+            break
+
+    # Collect skipped sizes
+    original_range = set(range(user_min_size, min(user_max_size, n) + 1))
+    smart_range = set(range(smart_min, smart_max + 1))
+    skipped = sorted(original_range - smart_range)
+
+    return (smart_min, smart_max, skipped)

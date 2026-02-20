@@ -9,6 +9,7 @@ The main workspace containing:
 - Selected combination info panel
 """
 
+import time
 from typing import List, Optional, Set
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -20,10 +21,10 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QBrush
 
 from models import NumberItem, Combination, FinalizedCombination, InputMode
-from solver import SubsetSumSolver, quick_check_possible
+from solver import SubsetSumSolver, quick_check_possible, compute_smart_bounds
 from excel_handler import get_excel_handler
 from utils import (
-    parse_numbers_line_separated, 
+    parse_numbers_line_separated,
     parse_numbers_comma_separated,
     validate_parameters,
     ColorManager,
@@ -40,31 +41,46 @@ DISABLED_COMBO_COLOR = (240, 240, 240)  # Light grey for invalid combos
 
 class SolverThread(QThread):
     """Background thread for running the solver."""
-    
-    result_found = pyqtSignal(object)  # Emits Combination
+
+    results_batch = pyqtSignal(list)  # Emits batch of Combinations
     finished_signal = pyqtSignal(int, int)  # total_found, total_checked
     progress = pyqtSignal(int, int)  # current_size, total_checked
-    
+
+    BATCH_SIZE = 20
+    BATCH_INTERVAL = 0.1  # seconds
+
     def __init__(self, solver: SubsetSumSolver):
         super().__init__()
         self.solver = solver
-    
+
     def run(self):
-        """Run the solver and emit results."""
+        """Run the solver and emit results in batches."""
         total_found = 0
-        
+        batch = []
+        last_emit_time = time.time()
+
         # Set up progress callback
         def on_progress(current_size, total_checked):
             self.progress.emit(current_size, total_checked)
-        
+
         self.solver.progress_callback = on_progress
-        
+
         for combo in self.solver.find_combinations_generator():
             total_found += 1
-            self.result_found.emit(combo)
-        
+            batch.append(combo)
+
+            now = time.time()
+            if len(batch) >= self.BATCH_SIZE or (now - last_emit_time) >= self.BATCH_INTERVAL:
+                self.results_batch.emit(batch)
+                batch = []
+                last_emit_time = now
+
+        # Emit remaining results
+        if batch:
+            self.results_batch.emit(batch)
+
         self.finished_signal.emit(total_found, 0)
-    
+
     def stop(self):
         """Request solver to stop."""
         self.solver.stop()
@@ -183,6 +199,7 @@ class FindTab(QWidget):
         self.current_target: float = 0.0
         self.exact_headers: dict = {}  # size -> row index of header
         self.approx_headers: dict = {}  # size -> row index of header
+        self._search_start_time: float = 0.0
         
         self._init_ui()
         self._connect_signals()
@@ -277,13 +294,23 @@ class FindTab(QWidget):
         self.min_size_input.setRange(1, 100)
         self.min_size_input.setValue(1)
         params_layout.addWidget(self.min_size_input, 2, 1)
-        
+
+        self.min_hint_label = QLabel("")
+        self.min_hint_label.setStyleSheet("color: #e67700; font-size: 8pt; font-style: italic;")
+        self.min_hint_label.setVisible(False)
+        params_layout.addWidget(self.min_hint_label, 2, 2)
+
         # Max Size
         params_layout.addWidget(QLabel("Max Numbers:"), 3, 0)
         self.max_size_input = QSpinBox()
         self.max_size_input.setRange(1, 100)
         self.max_size_input.setValue(10)
         params_layout.addWidget(self.max_size_input, 3, 1)
+
+        self.max_hint_label = QLabel("")
+        self.max_hint_label.setStyleSheet("color: #e67700; font-size: 8pt; font-style: italic;")
+        self.max_hint_label.setVisible(False)
+        params_layout.addWidget(self.max_hint_label, 3, 2)
         
         # Max Results
         params_layout.addWidget(QLabel("Max Results:"), 4, 0)
@@ -396,13 +423,19 @@ class FindTab(QWidget):
         self.load_btn.clicked.connect(self._on_load_numbers)
         self.excel_btn.clicked.connect(self._on_grab_from_excel)
         self.find_btn.clicked.connect(self._on_find_combinations)
-        
+
         # Connect both lists for selection
         self.exact_list.currentRowChanged.connect(self._on_exact_selected)
         self.approx_list.currentRowChanged.connect(self._on_approx_selected)
-        
+
         self.finalize_btn.clicked.connect(self._on_finalize)
         self.stop_btn.clicked.connect(self._on_stop_clicked)
+
+        # Live bounds hint updates
+        self.target_input.textChanged.connect(self._update_bounds_hints)
+        self.buffer_input.textChanged.connect(self._update_bounds_hints)
+        self.min_size_input.valueChanged.connect(self._update_bounds_hints)
+        self.max_size_input.valueChanged.connect(self._update_bounds_hints)
     
     def _on_mode_changed(self, index: int):
         """Handle input mode change."""
@@ -503,16 +536,23 @@ class FindTab(QWidget):
         self.exact_combinations.clear()
         self.approx_combinations.clear()
         self.selected_combo = None
-        
+
         # Update source list
         self.source_list.clear()
         for item in items:
             list_item = QListWidgetItem(item.display_label)
             list_item.setData(Qt.UserRole, item)
             self.source_list.addItem(list_item)
-        
-        self.source_count_label.setText(f"{len(items)} numbers loaded")
-        
+
+        # Show total sum alongside count
+        total = sum(item.value for item in items)
+        self.source_count_label.setText(f"{len(items)} numbers loaded | Total: {total:,.2f}")
+
+        # Auto-adjust max size spinbox to item count
+        self.max_size_input.setMaximum(len(items))
+        if self.max_size_input.value() > len(items):
+            self.max_size_input.setValue(len(items))
+
         # Clear results
         self.exact_list.clear()
         self.approx_list.clear()
@@ -520,6 +560,9 @@ class FindTab(QWidget):
         self.approx_count_label.setText("0 approximate matches")
         self.finalize_btn.setEnabled(False)
         self.info_panel.update_info(None)
+
+        # Update bounds hints with new items
+        self._update_bounds_hints()
     
     def _on_find_combinations(self):
         """Start searching for combinations."""
@@ -575,44 +618,76 @@ class FindTab(QWidget):
             max_size=params['max_size'],
             max_results=params['max_results']
         )
-        
+
+        # Check if smart bounds ruled out all sizes
+        if solver.bounds_info['no_solution']:
+            self._show_status(
+                f"No combinations possible: sizes "
+                f"{solver.bounds_info['original_min']}-{solver.bounds_info['original_max']} "
+                f"all ruled out mathematically.",
+                error=True
+            )
+            return
+
         # Run in thread
         self.find_btn.setVisible(False)
         self.stop_btn.setVisible(True)
         self.progress_label.setVisible(True)
-        self.progress_label.setText("Starting search...")
-        
+
+        # Show skipped sizes info
+        skipped = solver.bounds_info['skipped_sizes']
+        if skipped:
+            skip_text = f"Sizes {min(skipped)}-{max(skipped)} skipped." if len(skipped) > 1 else f"Size {skipped[0]} skipped."
+            self.progress_label.setText(
+                f"{skip_text} Searching sizes "
+                f"{solver.bounds_info['smart_min']}-{solver.bounds_info['smart_max']}..."
+            )
+        else:
+            self.progress_label.setText("Starting search...")
+
+        # Record start time
+        self._search_start_time = time.time()
+
         self.solver_thread = SolverThread(solver)
-        self.solver_thread.result_found.connect(self._on_combo_found)
+        self.solver_thread.results_batch.connect(self._on_combo_batch)
         self.solver_thread.finished_signal.connect(self._on_search_finished)
         self.solver_thread.progress.connect(self._on_progress)
         self.solver_thread.start()
     
-    def _on_combo_found(self, combo: Combination):
-            """Handle a new combination found."""
+    def _on_combo_batch(self, combos: list):
+        """Handle a batch of combinations found."""
+        self.exact_list.setUpdatesEnabled(False)
+        self.approx_list.setUpdatesEnabled(False)
+
+        for combo in combos:
             is_exact = abs(combo.difference) < 0.001  # Effectively zero
-            
             if is_exact:
                 self._add_combo_to_list(combo, self.exact_list, self.exact_combinations, "exact")
-                self.exact_count_label.setText(f"{len(self.exact_combinations)} exact matches")
             else:
                 self._add_combo_to_list(combo, self.approx_list, self.approx_combinations, "approx")
-                self.approx_count_label.setText(f"{len(self.approx_combinations)} approximate matches")
+
+        self.exact_list.setUpdatesEnabled(True)
+        self.approx_list.setUpdatesEnabled(True)
+
+        self.exact_count_label.setText(f"{len(self.exact_combinations)} exact matches")
+        self.approx_count_label.setText(f"{len(self.approx_combinations)} approximate matches")
     
     def _on_search_finished(self, total_found: int, total_checked: int):
         """Handle search completion."""
         self.find_btn.setVisible(True)
         self.stop_btn.setVisible(False)
         self.progress_label.setVisible(False)
-        
+
+        elapsed = time.time() - self._search_start_time
         total = len(self.exact_combinations) + len(self.approx_combinations)
         if total > 0:
             self._show_status(
                 f"Found {len(self.exact_combinations)} exact, "
-                f"{len(self.approx_combinations)} approximate"
+                f"{len(self.approx_combinations)} approximate "
+                f"in {elapsed:.1f}s"
             )
         else:
-            self._show_status("No combinations found", error=True)
+            self._show_status("No combinations found. Try increasing the buffer.", error=True)
 
     def _on_exact_selected(self, row: int):
         """Handle exact match selection."""
@@ -820,6 +895,14 @@ class FindTab(QWidget):
     
     def _update_source_colors(self):
         """Update all source list item colors - grey out finalized items."""
+        # Update source count to show available numbers
+        available = [i for i in self.items if not i.is_finalized]
+        available_total = sum(i.value for i in available)
+        self.source_count_label.setText(
+            f"{len(self.items)} loaded, {len(available)} available | "
+            f"Available total: {available_total:,.2f}"
+        )
+
         for i in range(self.source_list.count()):
             list_item = self.source_list.item(i)
             item: NumberItem = list_item.data(Qt.UserRole)
@@ -906,16 +989,83 @@ class FindTab(QWidget):
         list_item.setData(Qt.UserRole, combo)
         list_widget.addItem(list_item)
 
+    def _update_bounds_hints(self):
+        """Update the viable min/max hint labels based on current items and parameters."""
+        if not self.items:
+            self.min_hint_label.setVisible(False)
+            self.max_hint_label.setVisible(False)
+            return
+
+        # Parse target
+        try:
+            target = float(self.target_input.text())
+        except (ValueError, TypeError):
+            self.min_hint_label.setVisible(False)
+            self.max_hint_label.setVisible(False)
+            return
+
+        # Parse buffer
+        try:
+            buffer = abs(float(self.buffer_input.text()))
+        except (ValueError, TypeError):
+            buffer = 0.0
+
+        lower_bound = round(target - buffer, 2)
+        upper_bound = round(target + buffer, 2)
+
+        available = [item.value for item in self.items if not item.is_finalized]
+        if not available:
+            self.min_hint_label.setVisible(False)
+            self.max_hint_label.setVisible(False)
+            return
+
+        user_min = self.min_size_input.value()
+        user_max = self.max_size_input.value()
+
+        smart_min, smart_max, _ = compute_smart_bounds(
+            available, lower_bound, upper_bound, user_min, user_max
+        )
+
+        # No solution possible
+        if smart_min > smart_max:
+            self.min_hint_label.setText("No solution possible")
+            self.min_hint_label.setStyleSheet("color: #ff6b6b; font-size: 8pt; font-style: italic;")
+            self.min_hint_label.setVisible(True)
+            self.max_hint_label.setText("No solution possible")
+            self.max_hint_label.setStyleSheet("color: #ff6b6b; font-size: 8pt; font-style: italic;")
+            self.max_hint_label.setVisible(True)
+            return
+
+        # Min hint
+        if user_min < smart_min:
+            self.min_hint_label.setText(f"Viable min: {smart_min}")
+            self.min_hint_label.setStyleSheet("color: #e67700; font-size: 8pt; font-style: italic;")
+            self.min_hint_label.setVisible(True)
+        else:
+            self.min_hint_label.setVisible(False)
+
+        # Max hint
+        if user_max > smart_max:
+            self.max_hint_label.setText(f"Viable max: {smart_max}")
+            self.max_hint_label.setStyleSheet("color: #e67700; font-size: 8pt; font-style: italic;")
+            self.max_hint_label.setVisible(True)
+        else:
+            self.max_hint_label.setVisible(False)
+
+    def switch_to_excel_mode(self):
+        """Switch input mode to Excel Selection (called when Excel is connected)."""
+        self.mode_combo.setCurrentIndex(2)  # Index 2 = "Excel Selection"
+
     def _show_status(self, message: str, error: bool = False):
         """Show a status message."""
         self.status_label.setText(message)
         color = "#ff6b6b" if error else "#51cf66"
         self.status_label.setStyleSheet(f"color: {color};")
-    
+
     def get_finalized_combinations(self) -> List[FinalizedCombination]:
         """Get all finalized combinations."""
         return self.finalized.copy()
-    
+
     def check_excel_connection(self) -> bool:
         """Check if Excel is still connected."""
         handler = get_excel_handler()
